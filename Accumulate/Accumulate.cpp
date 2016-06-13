@@ -6,15 +6,25 @@
 #include <string.h>
 #include <nmmintrin.h>
 #include <direct.h>
+#include <io.h>
 
 const int STEP_X = 1;
 const int STEP_Y = 2;
 const int MAX_GRID = 64;
-const long long UNIT = 0x8000000000000000ull;
+const int MAX_SOLUTIONS = 0x300000;
+const unsigned long long UNIT = 0x8000000000000000ull;
+const unsigned long long MASK = 0xF100000000000000ull;
 const char controlFile[] = "Solutions\\accumulation.txt";
-const char solutionFolder[] = "C:\\Users\\compu\\Documents\\My Projects\\Knights\\Placing\\Accumulate\\Solutions\\%d";
+const char solutionFolder[] = "C:\\Users\\compu\\Documents\\My Projects\\Knights\\Placing\\Accumulate\\Solutions";
 const char solutionFile[] = "\\solutions.dat";
+const char maximisedFile[] = "\\maximised.dat";
 const char tidiedFile[] = "\\tidied.dat";
+const char duplicatesFile[] = "\\duplicates.dat";
+const int STATE_KEEP = 0;
+const int STATE_SCRAP = 1;
+const int STATE_DUPLICATE = 2;
+const int HASH_BORDER = 5;
+int multiplier[] = { 1,59,61,67,71,73,79,83,89,97,101,103,107,109,113,127,131,137,139,149,151,157,163,167,173,179,181,191,193,197,199,211,223,227,229,233,239,241,251,257,263,269,271,277,281,283,293,307,311,313,317,331,337,347,349,353,359,367,373,379,383,389,397,401,409 };
 
 struct compressedSolution 
 {
@@ -27,6 +37,14 @@ struct solution {
 	unsigned long long coverage[MAX_GRID];
 };
 
+struct solutionLeaf {
+	unsigned long long hash;
+	solutionLeaf* bigger;
+	solutionLeaf* lesser;
+	solutionLeaf* equal;
+	long long solutionOffset;
+};
+
 struct knight {
 	unsigned long long placement[MAX_GRID];
 	unsigned long long coverage[MAX_GRID];
@@ -35,6 +53,7 @@ struct knight {
 int knights[MAX_GRID][MAX_GRID];
 int knightsYX[MAX_GRID * MAX_GRID][2];
 knight* placements[MAX_GRID * MAX_GRID];
+solutionLeaf* solutionTree;
 
 void writeSolution(solution* sol, FILE* file)
 {
@@ -72,7 +91,53 @@ size_t readSolution(solution* sol, FILE* file)
 	return ret;
 }
 
-void addKnight(solution *sol, int attackSquare, long long* coverage) {
+FILE* mkSolDir(int attack, int coverage, int knight, const char* file, bool read, bool append)
+{
+	char folderName[1024];
+	char folderName2[1024];
+	sprintf(folderName, "%s\\K%d", solutionFolder, knight);
+	struct stat st;
+	if (stat(folderName, &st) != 0)
+	{
+		_mkdir(folderName);
+	}
+	sprintf(folderName2, "%s\\A%d", folderName, attack);
+	if (stat(folderName2, &st) != 0)
+	{
+		_mkdir(folderName2);
+	}
+	sprintf(folderName, "%s\\C%d", folderName2, coverage);
+	if (stat(folderName, &st) != 0)
+	{
+		_mkdir(folderName);
+	}
+	strcat(folderName, file);
+	if (read)
+	{
+		return fopen(folderName, "rb");
+	}
+	else
+	{
+		if (stat(folderName, &st) == 0) {
+			if (append)
+			{
+				return fopen(folderName, "ab");
+			}
+			else
+			{
+				printf("File exists already:%s\n", folderName);
+				exit(0);
+			}
+		} 
+		else
+		{
+			return fopen(folderName, "wb");
+		}
+	}
+
+}
+
+void addKnight(solution *sol, int attackSquare, int* coverage) {
 	knight* knightPrint = placements[attackSquare];
 	if (knightPrint == NULL)
 	{
@@ -111,38 +176,20 @@ void addKnight(solution *sol, int attackSquare, long long* coverage) {
 	}
 	long long* solPtr = (long long*)sol;
 	long long* knightPtr = (long long*)knightPrint;
+	long long cover = 0;
 	for (int i = sizeof(solution) / sizeof(long long); i > 0; i--, solPtr++, knightPtr++)
 	{
 		*solPtr |= *knightPtr;
 		if (i <= 64)
 		{
-			*coverage += _mm_popcnt_u64(*solPtr);
+			cover += _mm_popcnt_u64(*solPtr);
 		}
 	}
+	*coverage = (int)cover;
 }
 
-void addKnights(int attack)
+void initialiseXYs()
 {
-	int knight = 0;
-	solution sol;
-	FILE* outFile[MAX_GRID * MAX_GRID];
-	FILE* inFile = NULL;
-	char folderName[1024];
-	char fileName[1024];
-	int knightsAttacks[10];
-	int knightsAttacksCount = 0;
-
-	memset(outFile, 0, sizeof(outFile));
-	memset(placements, 0, sizeof(placements));
-
-	sprintf(folderName, solutionFolder, attack);
-	struct stat st;
-	if (stat(folderName, &st) != 0)
-	{
-		printf("Making solution directory\n");
-		_mkdir(folderName);
-	}
-
 	int square = 0;
 	for (int maxLine = 0; maxLine < MAX_GRID; maxLine++)
 	{
@@ -164,11 +211,25 @@ void addKnights(int attack)
 			}
 		}
 	}
+}
 
-	int x = knightsYX[attack][0];
-	int y = knightsYX[attack][1];
+void addKnights(int currentAttack, int currentKnight, int currentCoverage)
+{
+	solution sol;
+	FILE* outFile[MAX_GRID * MAX_GRID];
+	FILE* inFile = NULL;
+	int knightsAttacks[10];
+	int knightsAttacksCount = 0;
 
-	knightsAttacks[knightsAttacksCount] = attack;
+	memset(outFile, 0, sizeof(outFile));
+	memset(placements, 0, sizeof(placements));
+
+	initialiseXYs();
+
+	int y = knightsYX[currentAttack][0];
+	int x = knightsYX[currentAttack][1];
+
+	knightsAttacks[knightsAttacksCount] = currentAttack;
 	knightsAttacksCount++;
 	if ((y >= STEP_X) && (x >= STEP_Y))
 	{
@@ -207,14 +268,13 @@ void addKnights(int attack)
 
 
 	size_t loop = 1;
-	if (attack == 0)
+	if (currentAttack == 0)
 	{
 		memset(&sol, 0, sizeof(solution));
 	}
 	else
 	{
-		//sprintf(fileName, solutionFolder, attack);
-		//strcat(fileName, tidiedFile);
+		inFile = mkSolDir(currentAttack, currentCoverage, currentKnight, tidiedFile, true, false);
 		loop = readSolution(&sol, inFile);
 	}
 
@@ -223,20 +283,12 @@ void addKnights(int attack)
 		solution newSol;
 		for (int i = 0; i < knightsAttacksCount; i++)
 		{
-			long long coverage = 0;
+			int coverage = 0;
 			_memccpy(&newSol, &sol, 1, sizeof(solution));
 			addKnight(&newSol, knightsAttacks[i], &coverage);
 			if (outFile[coverage] == NULL)
 			{
-				sprintf(fileName, "%s\\%llu", folderName, coverage);
-				if (stat(fileName, &st) != 0)
-				{
-					_mkdir(fileName);
-				}
-
-				strcat(fileName, solutionFile);
-				outFile[coverage] = fopen(fileName, "wb");
-
+				outFile[coverage] = mkSolDir(currentAttack, coverage, currentKnight + 1, solutionFile, false, false);
 			}
 			writeSolution(&newSol, outFile[coverage]);
 		}
@@ -260,34 +312,38 @@ void addKnights(int attack)
 
 }
 
-void tidySolutions(int attack)
+void maximiseSolutions(int attack, int knightSoFar, int coverage, bool append)
 {
-	char fileName[1024];
 	FILE* inFile;
-	FILE* outFile;
+	FILE* outFile[MAX_GRID * MAX_GRID];
 	solution sol;
 	solution flippedSol;
 	solution* assessedSol;
 
-	sprintf(fileName, solutionFolder, attack);
-	strcat(fileName, solutionFile);
-	inFile = fopen(fileName, "wb");
+	memset(outFile, 0, sizeof(outFile));
 
-	size_t loop = fread(&sol, sizeof(solution), 1, inFile);
+	if (!append)
+	{
+		//Clear ALL existing maximum.dat in leaf folders
+	}
+	
+	inFile = mkSolDir(attack, coverage, knightSoFar, solutionFile, true, false);
+
+	size_t loop = readSolution(&sol, inFile);
 	while(loop) {
 		bool flip = false;
+		unsigned long long column = UNIT;
 		for (int row = 0; row < MAX_GRID; row++)
 		{
-			unsigned long long column = UNIT;
-			unsigned long long columnImpact = 1;
+			unsigned long long columnImpact = UNIT;
 			unsigned long long columnVal = 0;
 			for (int i = 0; i < MAX_GRID; i++)
 			{
 				if (sol.knights[i] & column)
 				{
 					columnVal |= columnImpact;
-					columnImpact = _rotr64(column, 1);
 				}
+				columnImpact = _rotr64(columnImpact, 1);
 			}
 			if (!flip)
 			{
@@ -301,25 +357,27 @@ void tidySolutions(int attack)
 				}
 			}
 			flippedSol.knights[row] = columnVal;
+			column = _rotr64(column, 1);
 		}
 
 		if (flip)
 		{
 			assessedSol = &flippedSol;
+			unsigned long long column = UNIT;
 			for (int row = 0; row < MAX_GRID; row++)
 			{
-				unsigned long long column = UNIT;
-				unsigned long long columnImpact = 1;
+				unsigned long long columnImpact = UNIT;
 				unsigned long long columnVal = 0;
 				for (int i = 0; i < MAX_GRID; i++)
 				{
 					if (sol.coverage[i] & column)
 					{
 						columnVal |= columnImpact;
-						columnImpact = _rotr64(column, 1);
 					}
+					columnImpact = _rotr64(columnImpact, 1);
 				}
 				flippedSol.coverage[row] = columnVal;
+				column = _rotr64(column, 1);
 			}
 		}
 		else
@@ -327,50 +385,295 @@ void tidySolutions(int attack)
 			assessedSol = &sol;
 		}
 
+		// find next square to attack
+		// In folder
 
+		int newAttack = 0;
+		bool exit = false;
+		for (int maxLine = 0; (maxLine < MAX_GRID) && !exit ; maxLine++)
+		{
+			unsigned long long test = UNIT;
+			for (int x = 0; x <= maxLine; x++)
+			{
+				if ((assessedSol->coverage[maxLine] & test) == 0)
+				{
+					exit = true;
+					break;
+				}
+				test = _rotr64(test, 1);
+				newAttack++;
+			}
+			if ((maxLine < MAX_GRID - 1) && !exit)
+			{
+				for (int y = 0; y <= maxLine; y++)
+				{
+					if ((assessedSol->coverage[y] & test) == 0)
+					{
+						exit = true;
+						break;
+					}
+					newAttack++;
+				}
+			}
+		}
 
+		if (outFile[newAttack] == NULL)
+		{
+			outFile[newAttack] = mkSolDir(newAttack, coverage, knightSoFar, maximisedFile, false, append);
+		}
 
-		loop = fread(&sol, sizeof(solution), 1, inFile);
+		writeSolution(assessedSol, outFile[newAttack]);
+
+		loop = readSolution(&sol, inFile);
 	}
 	
-	// Are there any duplicate solutions, if so save duplicates
-	// Save in new solutions.dat for "next" square
-	// Save in accumulation.txt (plus marker to state processed???)
-
-
-
 	fclose(inFile);
+	for (int i = 0; i < MAX_GRID * MAX_GRID; i++)
+	{
+		if (outFile[i] != NULL)
+		{
+			fclose(outFile[i]);
+		}
+	}
+}
+
+void tidySolutions(int attack, int knightNumber, int coverage)
+{
+	FILE* inFile = mkSolDir(attack, coverage, knightNumber, maximisedFile, true, false);
+	FILE* duplicatesOutFile = NULL;
+	FILE* tidiedOutFile = NULL;
+	solution sol;
+	solutionTree = (solutionLeaf *)malloc(sizeof(solutionLeaf) * MAX_SOLUTIONS);
+	solutionLeaf* slot = solutionTree;
+	unsigned long long count = 0;
+	bool error = false;
+	initialiseXYs();
+
+	int pos = knightsYX[attack][1] > knightsYX[attack][0] ? knightsYX[attack][1] : knightsYX[attack][0];
+	if (pos + HASH_BORDER >= MAX_GRID)
+	{
+		printf("Cannot hash more than %d rows", (MAX_GRID - HASH_BORDER));
+		return;
+	}
+
+	long long currentPosition = _ftelli64(inFile);
+	size_t loop = readSolution(&sol, inFile);
+	unsigned long long mask = _rotr64(MASK, pos);
+	while (loop)
+	{
+		int offset = 0;
+		int multiplierIndex = 0;
+		unsigned long long rowHash = 0;
+		unsigned long long hash = 0;
+		for(int row = 0; row < pos; row++)
+		{
+			unsigned long long part = (sol.coverage[row] & mask);
+			if (offset < pos)
+			{
+				part = _rotl64(part, pos - offset);
+			}
+			else if (offset > pos)
+			{
+				part = _rotr64(part, offset - pos);
+			}
+
+			rowHash |= part;
+
+			offset += HASH_BORDER;
+			if (offset > MAX_GRID)
+			{
+				offset -= MAX_GRID;
+				if (multiplierIndex == 0)
+				{
+					hash |= rowHash;
+				}
+				else
+				{
+					hash |= (rowHash + 1) * multiplier[multiplierIndex];
+					multiplierIndex++;
+				}
+			}
+		}
+
+		for (int row = pos; row < pos + HASH_BORDER; row++)
+		{
+			hash |= (_rotr64(sol.coverage[row], MAX_GRID - HASH_BORDER - pos) + 1) * multiplier[multiplierIndex];
+			multiplierIndex++;
+		}
+
+		slot->hash = hash;
+		slot->bigger = NULL;
+		slot->equal = NULL;
+		slot->lesser = NULL;
+		slot->solutionOffset = currentPosition;
+
+		if (count > 0)
+		{
+			solutionLeaf* root = solutionTree;
+			while (true)
+			{
+				if (hash == root->hash)
+				{
+					if (root->equal == NULL)
+					{
+						root->equal = slot;
+						break;
+					}
+					else
+					{
+						root = root->equal;
+					}
+				}
+				else if (hash > root->hash)
+				{
+					if (root->bigger == NULL)
+					{
+						root->bigger = slot;
+						break;
+					}
+					else
+					{
+						root = root->bigger;
+					}
+				}
+				else if (hash < root->hash)
+				{
+					if (root->lesser == NULL)
+					{
+						root->lesser = slot;
+						break;
+					}
+					else
+					{
+						root = root->lesser;
+					}
+
+				}
+			}
+		}
+
+		slot++;
+		count++;
+		currentPosition = _ftelli64(inFile);
+		loop = readSolution(&sol, inFile);
+		if ((count == MAX_SOLUTIONS) && loop)
+		{
+			printf("Too many solutions to manage.");
+			error = true;
+			break;
+		}
+	}
+	fclose(inFile);
+
+	if (error)
+	{
+		return;
+	}
+
+	inFile = mkSolDir(attack, coverage, knightNumber, maximisedFile, true, false);
+	duplicatesOutFile = mkSolDir(attack, coverage, knightNumber, duplicatesFile, false, false);
+	tidiedOutFile = mkSolDir(attack, coverage, knightNumber, tidiedFile, false, false);
+	slot = solutionTree;
+	readSolution(&sol, inFile);
+	solution compare;
+	while (count)
+	{
+		if (slot->equal == NULL)
+		{
+			writeSolution(&sol, tidiedOutFile);
+			slot++;
+		}
+		else
+		{
+			solutionLeaf* test = slot->equal;
+			int state = STATE_KEEP;
+			while (test != NULL)
+			{
+				_fseeki64(inFile, test->solutionOffset, SEEK_SET);
+				readSolution(&compare, inFile);
+				int cmp = memcmp(sol.coverage, compare.coverage, sizeof(unsigned long long) * MAX_GRID);
+				if (cmp == 0)
+				{
+					cmp = memcmp(sol.knights, compare.knights, sizeof(unsigned long long) * MAX_GRID);
+					if (cmp == 0)
+					{
+						state = STATE_SCRAP;
+						break;
+					}
+					else
+					{
+						state = STATE_DUPLICATE;
+					}
+				}
+				test = test->equal;
+			}
+
+			if (state == STATE_KEEP)
+			{
+				writeSolution(&sol, tidiedOutFile);
+			}
+			else if (state == STATE_DUPLICATE)
+			{
+				writeSolution(&sol, duplicatesOutFile);
+			}
+
+			slot++;
+			_fseeki64(inFile, slot->solutionOffset, SEEK_SET);
+		}
+		readSolution(&sol, inFile);
+		count--;
+	}
+	fclose(inFile);
+	fclose(tidiedOutFile);
+	fclose(duplicatesOutFile);
+
 }
 
 void findSolutions()
 {
 }
 
-
 int main(int argc, char* argv[]) {
 
-	addKnights(0);
+	addKnights(0, 0, 0);
+	maximiseSolutions(0, 1, 3, false);
+	maximiseSolutions(0, 1, 7, true);
+	tidySolutions(1, 1, 3);
+	tidySolutions(1, 1, 7);
+	addKnights(1, 1, 3);
+	addKnights(1, 1, 7);
+	maximiseSolutions(1, 2, 7, false);
+	maximiseSolutions(1, 2, 9, true);
+	maximiseSolutions(1, 2, 10, true);
+	maximiseSolutions(1, 2, 12, true);
+	maximiseSolutions(1, 2, 14, true);
+	maximiseSolutions(1, 2, 16, true);
+	tidySolutions(1, 2, 7);
+	tidySolutions(1, 2, 10);
+	tidySolutions(2, 2, 7);
+	tidySolutions(2, 2, 9);
+	tidySolutions(2, 2, 10);
+	tidySolutions(2, 2, 14);
+	tidySolutions(2, 2, 12);
+	tidySolutions(3, 2, 12);
+	tidySolutions(3, 2, 16);
 
-	if (argc > 1)
+	int attack = 0;
+	int knightSoFar = 0;
+	int coverage = 0;
+	if (argc > 4)
 	{
+		attack = atoi(argv[2]);
+		coverage = atoi(argv[3]);
+		knightSoFar = atoi(argv[4]);
+
 		if (strcmp(argv[1], "-a") == 0)
 		{
-			int attack = 0;
-			if (argc > 2)
-			{
-				attack = atoi(argv[2]);
-			}
-			addKnights(attack);
+			addKnights(attack, knightSoFar, coverage);
 		}
-		else if (strcmp(argv[1], "-t") == 0)
+		else if (strcmp(argv[1], "-m") == 0)
 		{
-			int attack = 0;
-			if (argc > 2)
-			{
-				attack = atoi(argv[2]);
-			}
-			addKnights(attack);
-			tidySolutions(attack);
+			maximiseSolutions(attack, knightSoFar, coverage, false);
 		}
 		else if (strcmp(argv[1], "-f") == 0)
 		{
