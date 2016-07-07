@@ -93,72 +93,56 @@ size_t readSolution(solution* sol, FILE* file)
 	return ret;
 }
 
-FILE* mkSolDir(int attack, int coverage, int knight, const char* file, bool read, bool append, bool text)
+FILE* mkSolDir(int attack, int coverage, int knight, const char* file, bool read, bool text, int counter)
 {
 	char folderName[1024];
 	char folderName2[1024];
-	sprintf(folderName, "%s\\K%d", solutionFolder, knight);
+	char fileName[1024];
+	const char* ext = datExt;
+	if (text)
+	{
+		ext = txtExt;
+	}
+	sprintf(folderName, "%s\\K%03dC%04dA%04d", solutionFolder, knight, coverage, attack);
 	struct stat st;
 	if (stat(folderName, &st) != 0)
 	{
 		_mkdir(folderName);
 	}
-	sprintf(folderName2, "%s\\A%d", folderName, attack);
-	if (stat(folderName2, &st) != 0)
-	{
-		_mkdir(folderName2);
-	}
-	sprintf(folderName, "%s\\C%d", folderName2, coverage);
-	if (stat(folderName, &st) != 0)
-	{
-		_mkdir(folderName);
-	}
-	strcat(folderName, file);
-	if (text)
-	{
-		strcat(folderName, txtExt);
-	}
-	else
-	{
-		strcat(folderName, datExt);
-	}
+	sprintf(fileName, "%s\\%s%d%s", folderName, file, counter, ext);
+
 	if (read)
 	{
 		if (text)
 		{
-			return fopen(folderName, "r");
+			return fopen(fileName, "r");
 		}
 		else
 		{
-			return fopen(folderName, "rb");
+			return fopen(fileName, "rb");
 		}
 	}
 	else
 	{
-		if (stat(folderName, &st) == 0) {
+		if (stat(fileName, &st) == 0) {
 			if (text)
 			{
-				return fopen(folderName, "w");
-			}
-			else if (append)
-			{
-				return fopen(folderName, "ab");
+				return fopen(fileName, "w");
 			}
 			else
 			{
-				printf("File exists already:%s\n", folderName);
-				exit(0);
+				return mkSolDir(attack, coverage, knight, file, read, text, counter + 1);
 			}
 		}
 		else
 		{
 			if (text)
 			{
-				return fopen(folderName, "w");
+				return fopen(fileName, "w");
 			}
 			else
 			{
-				return fopen(folderName, "wb");
+				return fopen(fileName, "wb");
 			}
 		}
 	}
@@ -241,7 +225,7 @@ void initialiseXYs()
 	}
 }
 
-void addKnights(int currentAttack, int currentKnight, int currentCoverage)
+void addKnights(int currentAttack, int currentKnight, int currentCoverage, int counter)
 {
 	solution sol;
 	FILE* outFile[MAX_GRID * MAX_GRID];
@@ -302,7 +286,7 @@ void addKnights(int currentAttack, int currentKnight, int currentCoverage)
 	}
 	else
 	{
-		inFile = mkSolDir(currentAttack, currentCoverage, currentKnight, tidiedFile, true, false, false);
+		inFile = mkSolDir(currentAttack, currentCoverage, currentKnight, tidiedFile, true, false, counter);
 		loop = readSolution(&sol, inFile);
 	}
 
@@ -316,7 +300,7 @@ void addKnights(int currentAttack, int currentKnight, int currentCoverage)
 			addKnight(&newSol, knightsAttacks[i], &coverage);
 			if (outFile[coverage] == NULL)
 			{
-				outFile[coverage] = mkSolDir(currentAttack, coverage, currentKnight + 1, solutionFile, false, false, false);
+				outFile[coverage] = mkSolDir(currentAttack, coverage, currentKnight + 1, solutionFile, false, false, 0);
 			}
 			writeSolution(&newSol, outFile[coverage]);
 		}
@@ -340,7 +324,7 @@ void addKnights(int currentAttack, int currentKnight, int currentCoverage)
 
 }
 
-void maximiseSolutions(int attack, int knightSoFar, int coverage, bool append)
+void maximiseSolutions(int attack, int knightSoFar, int coverage, int counter)
 {
 	FILE* inFile;
 	FILE* outFile[MAX_GRID * MAX_GRID];
@@ -350,12 +334,7 @@ void maximiseSolutions(int attack, int knightSoFar, int coverage, bool append)
 
 	memset(outFile, 0, sizeof(outFile));
 
-	if (!append)
-	{
-		//Clear ALL existing maximum.dat in leaf folders
-	}
-
-	inFile = mkSolDir(attack, coverage, knightSoFar, solutionFile, true, false, false);
+	inFile = mkSolDir(attack, coverage, knightSoFar, solutionFile, true, false, counter);
 
 	size_t loop = readSolution(&sol, inFile);
 	while (loop) {
@@ -447,7 +426,7 @@ void maximiseSolutions(int attack, int knightSoFar, int coverage, bool append)
 
 		if (outFile[newAttack] == NULL)
 		{
-			outFile[newAttack] = mkSolDir(newAttack, coverage, knightSoFar, maximisedFile, false, append, false);
+			outFile[newAttack] = mkSolDir(newAttack, coverage, knightSoFar, maximisedFile, false, false, 0);
 		}
 
 		writeSolution(assessedSol, outFile[newAttack]);
@@ -465,9 +444,9 @@ void maximiseSolutions(int attack, int knightSoFar, int coverage, bool append)
 	}
 }
 
-void tidySolutions(int attack, int knightNumber, int coverage)
+void tidySolutions(int attack, int knightNumber, int coverage, int counter)
 {
-	FILE* inFile = mkSolDir(attack, coverage, knightNumber, maximisedFile, true, false, false);
+	FILE* inFile = mkSolDir(attack, coverage, knightNumber, maximisedFile, true, false, counter);
 	FILE* duplicatesOutFile = NULL;
 	FILE* tidiedOutFile = NULL;
 	solution sol;
@@ -598,8 +577,8 @@ void tidySolutions(int attack, int knightNumber, int coverage)
 		return;
 	}
 
-	inFile = mkSolDir(attack, coverage, knightNumber, maximisedFile, true, false, false);
-	tidiedOutFile = mkSolDir(attack, coverage, knightNumber, tidiedFile, false, false, false);
+	inFile = mkSolDir(attack, coverage, knightNumber, maximisedFile, true, false, counter);
+	tidiedOutFile = mkSolDir(attack, coverage, knightNumber, tidiedFile, false, false, 0);
 	slot = solutionTree;
 	readSolution(&sol, inFile);
 	solution compare;
@@ -607,6 +586,7 @@ void tidySolutions(int attack, int knightNumber, int coverage)
 	{
 		if (slot->equal == NULL)
 		{
+			//Could be in a maximised file less than counter!
 			writeSolution(&sol, tidiedOutFile);
 			slot++;
 		}
@@ -643,7 +623,7 @@ void tidySolutions(int attack, int knightNumber, int coverage)
 			{
 				if (duplicatesOutFile == NULL)
 				{
-					duplicatesOutFile = mkSolDir(attack, coverage, knightNumber, duplicatesFile, false, false, false);
+					duplicatesOutFile = mkSolDir(attack, coverage, knightNumber, duplicatesFile, false, false, 0);
 				}
 				writeSolution(&sol, duplicatesOutFile);
 			}
@@ -663,10 +643,10 @@ void tidySolutions(int attack, int knightNumber, int coverage)
 
 }
 
-void dumpSolutions(int attack, int knightNumber, int coverage, const char* fileName, bool showCoverage)
+void dumpSolutions(int attack, int knightNumber, int coverage, const char* fileName, bool showCoverage, int counter)
 {
-	FILE* inFile = mkSolDir(attack, coverage, knightNumber, fileName, true, false, false);
-	FILE* outFile = mkSolDir(attack, coverage, knightNumber, fileName, false, false, true);
+	FILE* inFile = mkSolDir(attack, coverage, knightNumber, fileName, true, false, counter);
+	FILE* outFile = mkSolDir(attack, coverage, knightNumber, fileName, false, true, 0);
 
 	initialiseXYs();
 
@@ -721,70 +701,65 @@ void findSolutions()
 }
 
 int main(int argc, char* argv[]) {
-	/*
-	addKnights(0, 0, 0);
-	maximiseSolutions(0, 1, 3, false);
-	maximiseSolutions(0, 1, 7, true);
-	tidySolutions(1, 1, 3);
-	tidySolutions(1, 1, 7);
-	addKnights(1, 1, 3);
-	addKnights(1, 1, 7);
-	maximiseSolutions(1, 2, 7, false);
-	maximiseSolutions(1, 2, 9, true);
-	maximiseSolutions(1, 2, 10, true);
-	maximiseSolutions(1, 2, 12, true);
-	maximiseSolutions(1, 2, 14, true);
-	maximiseSolutions(1, 2, 16, true);
-	tidySolutions(1, 2, 7);
-	tidySolutions(1, 2, 10);
-	tidySolutions(2, 2, 7);
-	tidySolutions(2, 2, 9);
-	tidySolutions(2, 2, 10);
-	tidySolutions(2, 2, 14);
-	tidySolutions(3, 2, 12);
-	tidySolutions(3, 2, 16);
-	*/
-	dumpSolutions(3, 2, 16, tidiedFile, true);
+	
+	addKnights(0, 0, 0, 0);
+	maximiseSolutions(0, 1, 3, 0);
+	maximiseSolutions(0, 1, 7, 0);
+	tidySolutions(1, 1, 3, 0);
+	tidySolutions(1, 1, 7, 0);
+	addKnights(1, 1, 3, 0);
+	addKnights(1, 1, 7, 0);
+	maximiseSolutions(1, 2, 7, 0);
+	maximiseSolutions(1, 2, 9, 0);
+	maximiseSolutions(1, 2, 10, 0);
+	maximiseSolutions(1, 2, 12, 0);
+	maximiseSolutions(1, 2, 14, 0);
+	maximiseSolutions(1, 2, 16, 0);
+	tidySolutions(1, 2, 7, 0);
+	tidySolutions(1, 2, 10, 0);
+	tidySolutions(2, 2, 7, 0);
+	tidySolutions(2, 2, 9, 0);
+	tidySolutions(2, 2, 10, 0);
+	tidySolutions(2, 2, 14, 0);
+	tidySolutions(3, 2, 12, 0);
+	tidySolutions(3, 2, 16, 0);
+	
+	//dumpSolutions(3, 2, 16, tidiedFile, true);
 
 	int attack = 0;
 	int knightSoFar = 0;
 	int coverage = 0;
-	if (argc > 4)
+	int counter = 0;
+	if (argc > 5)
 	{
 		attack = atoi(argv[2]);
 		coverage = atoi(argv[3]);
 		knightSoFar = atoi(argv[4]);
+		counter = atoi(argv[5]);
 
 		if (strcmp(argv[1], "-a") == 0)
 		{
-			addKnights(attack, knightSoFar, coverage);
+			addKnights(attack, knightSoFar, coverage, counter);
 		}
 		else if (strcmp(argv[1], "-m") == 0)
 		{
-			if (argc > 5)
-			{
-				maximiseSolutions(attack, knightSoFar, coverage, true);
-			}
-			else
-			{
-				maximiseSolutions(attack, knightSoFar, coverage, false);
-			}
+			maximiseSolutions(attack, knightSoFar, coverage, counter);
 		}
 		else if (strcmp(argv[1], "-d") == 0)
 		{
 			bool showCoverage = false;
-			if (argc > 6)
+			if (argc > 7)
 			{
 				showCoverage = true;
 			}
 
-			if (argc > 5)
+			if (argc > 6)
 			{
-				dumpSolutions(attack, knightSoFar, coverage, argv[5], showCoverage);
+				dumpSolutions(attack, knightSoFar, coverage, argv[5], showCoverage, counter);
 			}
 			else
 			{
-				dumpSolutions(attack, knightSoFar, coverage, tidiedFile, showCoverage);
+				dumpSolutions(attack, knightSoFar, coverage, tidiedFile, showCoverage, counter);
 			}
 		}
 		else if (strcmp(argv[1], "-f") == 0)
